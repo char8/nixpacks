@@ -8,7 +8,8 @@ use nixpacks::{
 };
 use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::thread; // WIP delete me
+use std::time::Duration;  // WIP delete me
 use uuid::Uuid;
 use wait_timeout::ChildExt;
 
@@ -147,6 +148,7 @@ fn build_with_build_time_env_vars(path: &str, env_vars: Vec<&str>) -> String {
 }
 
 const POSTGRES_IMAGE: &str = "postgres";
+const MARIADB_IMAGE: &str = "mariadb";
 
 struct Network {
     name: String,
@@ -239,6 +241,60 @@ fn run_postgres() -> Container {
                 ("PGDATABASE".to_string(), "postgres".to_string()),
                 ("PGPASSWORD".to_string(), password),
                 ("PGHOST".to_string(), container_name),
+            ]),
+            network: None,
+        }),
+    }
+}
+
+fn run_mariadb() -> Container {
+    let mut docker_cmd = Command::new("docker");
+
+    let hash = Uuid::new_v4().to_string();
+    let container_name = format!("mariadb-{}", hash);
+    let password = hash;
+    // run
+    docker_cmd.arg("run");
+
+    // Set Needed Envvars
+    docker_cmd
+        .arg("-e")
+        .arg(format!("MARIADB_ROOT_PASSWORD={}", &password))
+        .arg("-e")
+        .arg(format!("MARIADB_PASSWORD={}", &password))
+        .arg("-e")
+        .arg("MARIADB_USER=mariadb")
+        .arg("-e")
+        .arg("MARIADB_DATABASE=mariadb");
+
+    // Run detached
+    docker_cmd.arg("-d");
+
+    // attach name
+    docker_cmd.arg("--name").arg(container_name.clone());
+
+    // Assign image
+    docker_cmd.arg(MARIADB_IMAGE);
+
+    // Run the command
+    docker_cmd
+        .spawn()
+        .unwrap()
+        .wait()
+        .context("starting mariadb")
+        .unwrap();
+
+    thread::sleep(Duration::new(5, 0));  // WIP find workaround
+
+    Container {
+        name: container_name.clone(),
+        config: Some(Config {
+            environment_variables: EnvironmentVariables::from([
+                ("DB_PORT".to_string(), "3306".to_string()),
+                ("DB_USER".to_string(), "mariadb".to_string()),
+                ("DB_NAME".to_string(), "mariadb".to_string()),
+                ("DB_PASSWORD".to_string(), password),
+                ("DB_HOST".to_string(), container_name),
             ]),
             network: None,
         }),
@@ -458,6 +514,32 @@ fn test_django() {
     );
 
     // Cleanup containers and networks
+    stop_and_remove_container(container_name);
+    remove_network(network_name);
+
+    assert!(output.contains("Running migrations"));
+}
+
+#[test]
+fn test_django_mysql() {
+    let n = create_network();
+    let network_name = n.name.clone();
+
+    let c = run_mariadb();
+    let container_name = c.name.clone();
+
+    attach_container_to_network(n.name, container_name.clone());
+
+    let name = simple_build("./examples/python-django-mysql");
+
+    let output = run_image(
+        &name,
+        Some(Config {
+            environment_variables: c.config.unwrap().environment_variables,
+            network: Some(network_name.clone()),
+        }),
+    );
+
     stop_and_remove_container(container_name);
     remove_network(network_name);
 
